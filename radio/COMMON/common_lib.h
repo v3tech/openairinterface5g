@@ -67,6 +67,8 @@ typedef enum {
   USRP_X400_DEV,
   /*!\brief device is BLADE RF*/
   BLADERF_DEV,
+  /*!\brief device is YUNSDR pcie*/
+  YUNSDR_DEV,
   /*!\brief device is LMSSDR (SoDeRa)*/
   LMSSDR_DEV,
   /*!\brief device is Iris */

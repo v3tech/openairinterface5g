@@ -256,6 +256,90 @@ install_usrp_uhd_driver() {
     fi
 }
 
+check_install_yunsdr_driver() {
+    local kernel arch sdk_arch elf_machine sdk_ready=false
+    local lib=/usr/local/lib/libyunsdr_ss.so header=/usr/local/include/yunsdr_api_ss.h
+    local repo=${YUNSDR_DRIVER_REPO:-https://github.com/v3tech/YunSDR-Driver.git}
+    local -a elevate=()
+    if (( EUID != 0 )); then
+        read -r -a elevate <<< "${SUDO:-sudo}"
+    fi
+
+    kernel=$(uname -r)
+    arch=$(uname -m)
+    case "$arch" in
+        x86_64)        sdk_arch=x86_64; elf_machine="Advanced Micro Devices X86-64" ;;
+        aarch64|arm64) sdk_arch=arm64;  elf_machine="AArch64" ;;
+        *) echo_fatal "Unsupported YunSDR CPU architecture: $arch"; return 1 ;;
+    esac
+
+    if [[ -s "$lib" && -s "$header" ]] &&
+       LC_ALL=C readelf -h "$lib" 2>/dev/null | grep -Eq "Machine:[[:space:]]+${elf_machine}$"; then
+        sdk_ready=true
+        if [[ $(dkms status -m xdma -k "$kernel" 2>/dev/null) =~ :[[:space:]]installed([[:space:]]|$) ]]; then
+            echo_success "YunSDR SDK and XDMA DKMS driver are installed for $kernel."
+            return 0
+        fi
+    fi
+
+    # Keep temporary files, shell options and os-release variables local to this run.
+    (
+        local family rpm_tool package version tmp
+        local -a packages headers=()
+        . /etc/os-release || exit 1
+        case " ${ID:-} ${ID_LIKE:-} " in
+            *" debian "*|*" ubuntu "*) family=deb ;;
+            *" rhel "*|*" fedora "*|*" centos "*) family=rpm ;;
+            *) echo "Unsupported YunSDR distribution: ${PRETTY_NAME:-unknown}" >&2; exit 1 ;;
+        esac
+
+        tmp=$(mktemp -d /tmp/YunSDR-Driver.XXXXXXXX) || exit 1
+        trap 'rm -rf -- "$tmp"' EXIT
+        git clone --depth 1 --branch main -- "$repo" "$tmp/repo" || exit 1
+        shopt -s nullglob
+        if [[ "$family" == deb ]]; then
+            packages=("$tmp/repo/XDMA-Driver"/xdma-dkms_*_all.deb)
+        else
+            packages=("$tmp/repo/XDMA-Driver"/xdma-dkms-*.noarch.rpm)
+        fi
+        if (( ${#packages[@]} != 1 )); then
+            echo "Expected one XDMA DKMS $family package, found ${#packages[@]}." >&2
+            exit 1
+        fi
+        package=${packages[0]}
+
+        if [[ "$sdk_ready" == false ]]; then
+            "${elevate[@]}" install -D -m 0644 "$tmp/repo/SDK/$sdk_arch/libyunsdr_ss.so" "$lib" || exit 1
+            "${elevate[@]}" install -D -m 0644 "$tmp/repo/SDK/include/yunsdr_api_ss.h" "$header" || exit 1
+        fi
+        "${elevate[@]}" ldconfig || exit 1
+
+        if [[ "$family" == deb ]]; then
+            version=$(dpkg-deb -f "$package" Version) || exit 1
+            version=${version%-*}  # The DKMS source version excludes the Debian revision.
+            if [[ ! -r /lib/modules/$kernel/build/Makefile ]]; then
+                headers=("linux-headers-$kernel")
+            fi
+            "${elevate[@]}" apt-get install -y "${headers[@]}" "$package" || exit 1
+        else
+            version=$(rpm -qp --qf '%{VERSION}' "$package") || exit 1
+            if command -v dnf >/dev/null; then rpm_tool=dnf; else rpm_tool=yum; fi
+            if [[ ! -r /lib/modules/$kernel/build/Makefile ]]; then
+                headers=("kernel-devel-$kernel")
+            fi
+            "${elevate[@]}" "$rpm_tool" install -y "${headers[@]}" "$package" || exit 1
+        fi
+
+        # A package can already be installed while its module is missing for this kernel.
+        if [[ ! $(dkms status -m xdma -v "$version" -k "$kernel") =~ :[[:space:]]installed([[:space:]]|$) ]]; then
+            "${elevate[@]}" dkms install -m xdma -v "$version" -k "$kernel" || exit 1
+        fi
+    ) || { echo_fatal "Failed to install YunSDR for $arch, kernel $kernel."; return 1; }
+
+    echo_success "YunSDR SDK and XDMA DKMS driver are installed for $kernel."
+}
+
+
 install_bladerf_driver_from_source(){
     echo_info "\nInstalling BladeRF driver from sources."
     cd /tmp

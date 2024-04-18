@@ -56,3 +56,8 @@ add_boolean_option(OAI_ZMQ OFF "Activate OAI's ZMQ radio" OFF)
 if(OAI_ZMQ)
   add_subdirectory(zmq)
 endif()
+
+add_boolean_option(OAI_YUNSDR OFF "Activate OAI's YunSDR driver" OFF)
+if(OAI_YUNSDR)
+  add_subdirectory(YUNSDR)
+endif()
